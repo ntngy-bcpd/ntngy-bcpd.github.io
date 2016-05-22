@@ -1,0 +1,195 @@
+---
+title: "Practical Machine Learning-Predicting Exercise Activities"
+output: html_document
+date: "May 21, 2016"
+---
+## Overview
+
+The Weight Lifting Exercise data set is modeled to predict how a person performs the exercises. After some exploring of the data, the features used for identification or derived from the measured data are excluded. The remaining features related to measurements of movements of exercise participants are selected as predictors in a random forest model to predict performance. This model's predictions for a validation data set have an accuracy similar to the one calculated from the out-of-bag error estimate of the model. 
+
+## Exploratory Data Analysis and Predictor Selection
+
+The Weight Lifting Exercise data has a training set and a testing set as follows:
+
+```{r settings, echo=FALSE, eval=TRUE, message=FALSE}
+## Set up necessary libraries
+library(ggplot2)
+library(caret)
+```
+
+```{r loaddata, echo=FALSE, eval=TRUE}
+## Load the pml data sets
+training <- read.csv(file = "pml-training.csv", header = TRUE)
+testing <- read.csv(file = "pml-testing.csv", header = TRUE)
+nrows <- dim(training)[1]
+ncols <- dim(training)[2]
+dimData <- rbind(dim(training), dim(testing))
+rownames(dimData) <- c("Training", "Testing")
+colnames(dimData) <- c("Rows", "Columns")
+dimData
+```
+
+The training set is for model generation, and the testing set is for the quiz. The training set has `r nrows` observations and `r ncols` variables of dumbbell exercises performed by six participants. The last variable $classe$ is the performance classifier to be predicted.
+
+Class | Description
+-------| ------------
+A      | Exactly according to specification   
+B      | Throwing elbows to the front
+C      | Lifting the dumbbell halfway
+D      | Lowering the dumbbell halfway
+E      | Throwing hips to the front
+
+The other variables are related to identifications, measurements and their statistics. For more details on this data set see [Velloso et al.](http://groupware.les.inf.puc-rio.br/har)
+
+```{r exploringdata, echo=FALSE, eval=TRUE}
+## Original features
+names_org <- names(training)
+## Identifications
+names_id_idx <- c(1:7)
+## Statistics
+names_stat_idx <- 
+    grep("kurtosis_|skewness_|max_|min_|amplitude_|stddev_|avg_|var_",
+         names_org)
+names_id_stat_idx <- c(names_id_idx, names_stat_idx)
+## High correlation
+names_cor <- names_org[-c(names_id_stat_idx, length(names_org))]
+correlationMatrix <- cor(training[, names_cor], use="pairwise.complete.obs")
+cutoff <- 0.75
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff = cutoff)
+names_hi_cor <- names_cor[highlyCorrelated]
+names_hi_cor_idx <- which(names_org %in% names_hi_cor)
+## Predictors and excluded features 
+names_not_train_idx <- c(names_id_idx, names_stat_idx, names_hi_cor_idx)
+names_train <- names_org[-c(names_not_train_idx, length(names_org))]
+n_features <- length(names_org) - 1
+n_id <- length(names_id_idx)
+n_stat <- length(names_stat_idx)
+n_hi_cor <- length(names_hi_cor_idx)
+n_train <- length(names_train)
+```
+
+The first `r n_id` features identifying the participants and times are excluded. There are `r n_stat` features referring to statistics of measurements with kurtosis, skewness, max, min, amplitude, stddev, avg, and var in variable names. These features are also excluded because they are incomplete and derived from measurements. The remaining features are screened for correlations with a `r sprintf("%.0f", 100*cutoff)`% cutoff. There are `r n_hi_cor` features excluded because of high correlation. The remaining `r n_train` are predictors selected for  modeling. A summary of features and an example summary of an identifier, a statistic and a predictor are below:
+
+```{r exploringsummary, echo=FALSE, eval=TRUE}
+## Summarize the features
+nTab <- rbind(n_features, n_id, n_stat, n_hi_cor, n_train)
+rownames(nTab) <- c("Total", "Id", "Derived", "High Correlation", "Predictor")
+colnames(nTab) <- c("Features")
+print(nTab)
+summary(training[, c("user_name", "stddev_yaw_belt", "yaw_belt")])
+```
+
+The following plot is the plot of the classifiers against two of the predictors.
+
+```{r plottingdata, echo=FALSE, eval=TRUE}
+par(mfrow=c(1, 1))
+qplot(magnet_dumbbell_z, yaw_belt, color = classe, data = training, main = "Training Data")
+```
+
+## Fitting Random Forest Model
+
+```{r datasplit, echo=FALSE, eval=TRUE}
+## Training and validation sets
+set.seed(1234)
+psplit <- 0.7
+inTrain <- createDataPartition(y = training$classe, p = psplit,
+                               list = FALSE)
+ptraining <- training[inTrain, ]
+ptest <- training[-inTrain, ]
+```
+
+The original training data set is split `r 100*psplit`:`r 100*(1-psplit)` into two sets for training and validation, respectively.
+
+The predictors in the split training data set are fitted to a random forest model to predict the $classe$ performance classifier. The random forest (rf) method in the caret package is used with default options.
+
+```{r rfmodel, echo=FALSE, eval=TRUE, message=FALSE}
+## Random forest
+library(caret)
+formulaRf <- as.formula(paste("classe ~ ", 
+                              paste(names_train, collapse = "+")))
+modelRf <- train(formulaRf, data = ptraining, method = "rf", 
+                 prox = FALSE)
+finalModel <- modelRf$finalModel
+```
+
+#### Out-of-Bag Error Estimates
+
+The plot of out-of-bag error estimates is below.
+
+```{r rferror, echo=FALSE, eval=TRUE}
+## Plot tree out-of-bag errors
+par(mfrow=c(1, 1))
+oobErrors <- finalModel$err.rate
+classError <- colnames(oobErrors)
+plot(finalModel, main = "Out-of-bag Error Estimates",
+     col=c("black", "cyan", "orange", "blue", "red", "blue"))
+legend(320, 0.20, classError,
+       lty=c(1,1),
+       lwd=c(2.5,2.5), 
+       col=c("black", "cyan", "orange", "blue", "red", "blue"))
+
+ntrees <- dim(oobErrors)[1]
+finalOobError <- oobErrors[ntrees, 1]
+```
+
+The out-of-bag error decreases with the number of trees and flatens out at about `r sprintf("%.1f", 100*finalOobError)`%.
+
+#### Gini Importance
+
+The plot of Gini importance is below.
+
+```{r rfimportance, echo=FALSE, eval=TRUE}
+## Plot out-of-bag errors
+par(mfrow=c(1, 1))
+varImpPlot(finalModel, main="Gini Importance")
+importanceOrder <- order(-finalModel$importance)
+## Top predictors
+ntop = 7
+names_imp <- rownames(finalModel$importance)[importanceOrder][1:ntop]
+names_imp_list <- paste(
+    paste(names_imp[1:ntop-1], collapse = ", "), "and",
+    names_imp[ntop])
+
+```
+
+The top `r ntop` important predictors are `r names_imp_list`.
+
+#### Validation and Accuracy
+
+Following are the confusion matrices of the training and validation data sets:
+
+```{r rfvalidation, echo=FALSE, eval=TRUE}
+## Training accuracy
+trainPredicts <- predict(modelRf, ptraining)
+trainConf <- confusionMatrix(trainPredicts, ptraining$classe,
+                             dnn=c("Prediction", "Training Classe"))
+trainConf[['table']]
+trainAccuracy <- trainConf[['overall']]['Accuracy']
+## Validation accuracy
+testPredicts <- predict(modelRf, ptest)
+ptest$correctPredict <- testPredicts == ptest$classe
+testConf <- confusionMatrix(testPredicts, ptest$classe,
+                            dnn=c("Prediction", "Validation Classe"))
+testConf[['table']]
+testAccuracy <- testConf[['overall']]['Accuracy']
+## Accuracy
+accuracyTab <- rbind(trainAccuracy, testAccuracy)
+rownames(accuracyTab) <- c("Training", "Validation")
+accuracyTab
+```
+
+The random forest model predicts correctly all performance classifiers in the split training data set. For the validation data set, the prediction accuracy is `r sprintf("%.1f", 100*testAccuracy)`%. This validation accuracy is in line with the out-of-bag error estimate of `r sprintf("%.1f", 100*finalOobError)`% or `r sprintf("%.1f", 100*(1-finalOobError))`% accuracy.
+
+The plot below shows the correct and incorrect predictions for the validation data set.
+
+```{r rfvalidationplot, echo=FALSE, eval=TRUE}
+## Validation prediction plot
+qplot(magnet_dumbbell_z, yaw_belt, color = correctPredict, data = ptest,
+      main = "Validation Data Predictions")
+```
+
+## Conlusions
+
+The random forest model fits the selected predictors to predict the excercise performance classifiers of the split training and validation data sets with `r sprintf("%.1f", 100*trainAccuracy)`% and `r sprintf("%.1f", 100*testAccuracy)`% accuracy, respectively.
+
+Although cross-validation is unnecessary for random forest models (see [Breiman and Cutler](http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr)), the validation step is done to show that the validation accuracy of the model is comparable to the accuracy calculated from the out-of-bag error estimate of the model.
